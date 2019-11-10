@@ -155,12 +155,12 @@ public class SendMoneyController {
         Coin coin = Coin.parseCoin(amount);
         //This is an array that will hold the current "valid" unspents of our hop transactions. If these hops were genuine transactions,
         //this would be the actual UTXOs of those transactions. Because we own all the UTXOs in these hops, we have to pretend these are the "genuine" ones.
-        ArrayList<TransactionOutput> fakeValidUnspents = new ArrayList<>();
+        ArrayList<TransactionOutput> fakeUnspents = new ArrayList<>();
         //A list of all txs for this Tunnel. It will always be: initial -> hop1 ... hop10 -> final hop
         List<Transaction> tunnelTxs = new ArrayList<>();
 
         //Create the initial hop.
-        Transaction initialHop = this.createInitialHop(coin);
+        Transaction initialHop = this.createInitialHop(coin, fakeUnspents);
         //Add hop to tunnel txs list
         tunnelTxs.add(initialHop);
         //Increase hop count by one.
@@ -169,7 +169,7 @@ public class SendMoneyController {
         //Here is where we start creating the hops in between the initial and final.
         for(int x = 0; x < hops; x++) {
             //Create the next hop by using data from the previous hop. For x = 0, we use the initial hop as we added it the tunnelTxs array above.
-            Transaction nextHop = this.createNextHop(tunnelTxs.get(currentHop - 1), fakeValidUnspents);
+            Transaction nextHop = this.createNextHop(tunnelTxs.get(currentHop - 1), fakeUnspents);
             //Add the next hop to the array
             tunnelTxs.add(nextHop);
             //Increase current hop by one.
@@ -177,7 +177,7 @@ public class SendMoneyController {
         }
 
         //FINAL TX/HOP
-        Transaction finalTx = this.createFinalHop(fakeValidUnspents, coin, finalRecipient);
+        Transaction finalTx = this.createFinalHop(fakeUnspents, coin, finalRecipient);
         tunnelTxs.add(finalTx);
 
         //Here we broadcast each hop one-by-one.
@@ -196,7 +196,7 @@ public class SendMoneyController {
         overlayUI.done();
     }
 
-    private Transaction createInitialHop(Coin finalCoinAmountToSend) throws InsufficientMoneyException {
+    private Transaction createInitialHop(Coin finalCoinAmountToSend, ArrayList<TransactionOutput> fakeUnspents) throws InsufficientMoneyException {
         //This is the initial hop, so no previous hops exist. To get UTXOs to use, we get all UTXOs in the wallet.
         List<TransactionOutput> utxos = Main.bitcoin.wallet().getUtxos();
         //Here we get the UTXOs to use for this hop.
@@ -221,11 +221,12 @@ public class SendMoneyController {
         Main.bitcoin.wallet().completeTx(req);
         //Commit the tx to our wallet and mark UTXOs as spent and mark change addresses as used.
         Main.bitcoin.wallet().commitTx(req.tx);
+        this.updateFakeUnspents(fakeUnspents, req.tx.getInputs(), req.tx.getOutputs());
         //Return the tx object from the SendRequest.
         return req.tx;
     }
 
-    private Transaction createNextHop(Transaction prevHop, ArrayList<TransactionOutput> fakeValidUnspents) throws InsufficientMoneyException {
+    private Transaction createNextHop(Transaction prevHop, ArrayList<TransactionOutput> fakeUnspents) throws InsufficientMoneyException {
         //Get the UTXOs of the previous hop.
         List<TransactionOutput> prevHopUtxos = prevHop.getOutputs();
         List<TransactionOutput> currentHopInputs = new ArrayList<>();
@@ -244,34 +245,54 @@ public class SendMoneyController {
         Address fakeAddress = Main.bitcoin.wallet().freshReceiveAddress();
         SendRequest req = SendRequest.to(Main.params, fakeAddress.toBase58(), fakeSendAmount);
         req.shuffleOutputs = true;
-        req.utxos = currentHopInputs;
-        this.getFakeValidUtxos(fakeValidUnspents, prevHopUtxos, currentHopInputs);
+        req.utxos = fakeUnspents;
         Main.bitcoin.wallet().completeTx(req);
         Main.bitcoin.wallet().commitTx(req.tx);
+        this.updateFakeUnspents(fakeUnspents, req.tx.getInputs(), req.tx.getOutputs());
         return req.tx;
     }
 
-    private Transaction createFinalHop(List<TransactionOutput> allUnspentOutputs, Coin finalCoinAmountToSend, String recipient) throws InsufficientMoneyException {
+    private Transaction createFinalHop(List<TransactionOutput> fakeUnspents, Coin finalCoinAmountToSend, String recipient) throws InsufficientMoneyException {
         //Final hop! Oh boy!
         //Here we get the final amount to actually send the real recipient, and get all of the fake "valid" UTXOs and calculate which ones to use with a threshold of 1.025
-        List<TransactionOutput> currentHopInputs = this.getLargestUtxosForHop(finalCoinAmountToSend, allUnspentOutputs, 1.025d);
         //craft tx as usual
         SendRequest req = SendRequest.to(Main.params, recipient, finalCoinAmountToSend);
         req.shuffleOutputs = true;
-        req.utxos = currentHopInputs;
+        req.utxos = fakeUnspents;
         Main.bitcoin.wallet().completeTx(req);
         Main.bitcoin.wallet().commitTx(req.tx);
+
         return req.tx;
     }
 
-    private ArrayList<TransactionOutput> getFakeValidUtxos(ArrayList<TransactionOutput> fakeValidUnspents, List<TransactionOutput> prevHopOutputs, List<TransactionOutput> currentHopSelectedInputs) {
-        for(TransactionOutput utxo : prevHopOutputs) {
-            if(currentHopSelectedInputs.indexOf(utxo) == -1) {
-                fakeValidUnspents.add(utxo);
+    private ArrayList<TransactionOutput> updateFakeUnspents(ArrayList<TransactionOutput> fakeUnspents, List<TransactionInput> transactionInputs, List<TransactionOutput> transactionOutputs) {
+        for(TransactionInput input : transactionInputs) {
+            if(fakeUnspents.indexOf(input.getConnectedOutput()) != -1) {
+                fakeUnspents.remove(input.getConnectedOutput());
             }
         }
 
-        return fakeValidUnspents;
+        ArrayList<TransactionOutput> tempUtxos = new ArrayList<>(transactionOutputs);
+        if(transactionOutputs.size() > 1) {
+            for (int i = 0; i < tempUtxos.size(); i++) {
+                for (int j = 1; j < (tempUtxos.size() - i); j++) {
+                    TransactionOutput utxoBefore = tempUtxos.get(j - 1);
+                    TransactionOutput thisUtxo = tempUtxos.get(j);
+                    double utxoBeforeValue = Double.parseDouble(utxoBefore.getValue().toPlainString());
+                    double thisUtxoValue = Double.parseDouble(thisUtxo.getValue().toPlainString());
+
+                    if (utxoBeforeValue < thisUtxoValue) {
+                        TransactionOutput temp = tempUtxos.get(j - 1);
+                        tempUtxos.set(j - 1, tempUtxos.get(j));
+                        tempUtxos.set(j, temp);
+                    }
+                }
+            }
+        }
+
+        fakeUnspents.add(tempUtxos.get(0));
+
+        return fakeUnspents;
     }
 
     private double getHopUtxosTotal(List<TransactionOutput> hopInputs) {
