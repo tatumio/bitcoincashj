@@ -127,7 +127,6 @@ public class Address extends VersionedChecksummedBytes {
             Address.fromBase58(params, legacyAddress);
             return true;
         } catch(AddressFormatException e) {
-            e.printStackTrace();
             return false;
         }
     }
@@ -147,7 +146,6 @@ public class Address extends VersionedChecksummedBytes {
             Address.fromCashAddr(params, cashaddr);
             return true;
         } catch(AddressFormatException e) {
-            e.printStackTrace();
             return false;
         }
     }

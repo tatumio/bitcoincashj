@@ -18,8 +18,11 @@ import com.google.common.util.concurrent.*;
 import javafx.scene.input.*;
 import okio.ByteString;
 import org.bitcoinj.core.NetworkParameters;
+import org.bitcoinj.core.PeerAddress;
 import org.bitcoinj.kits.WalletAppKit;
 import org.bitcoinj.net.NetHelper;
+import org.bitcoinj.net.discovery.PeerDiscovery;
+import org.bitcoinj.net.discovery.PeerDiscoveryException;
 import org.bitcoinj.params.*;
 import org.bitcoinj.utils.BriefLogFormatter;
 import org.bitcoinj.utils.Threading;
@@ -40,15 +43,19 @@ import wallettemplate.utils.TextFieldValidator;
 import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.URL;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 import static wallettemplate.utils.GuiUtils.*;
 
 public class Main extends Application {
     private boolean USE_TEST_WALLET = false;
     public static NetworkParameters params = TestNet3Params.get();
-    public static final String APP_NAME = "WalletTemplate";
+    public static final String APP_NAME = "Sender";
     private static final String WALLET_FILE_NAME = APP_NAME.replaceAll("[^a-zA-Z0-9.-]", "_") + "-"
             + params.getPaymentProtocolId();
 
@@ -148,10 +155,40 @@ public class Main extends Application {
             protected void onSetupCompleted() {
                 // Don't make the user wait for confirmations for now, as the intention is they're sending it
                 // their own money!
+                wallet().setAcceptRiskyTransactions(true);
                 bitcoin.wallet().allowSpendingUnconfirmedTransactions();
                 Platform.runLater(controller::onBitcoinSetup);
+
+                System.out.println(wallet().getUtxos().size());
+                for(int x = 0; x < wallet().getUtxos().size(); x++) {
+                    System.out.println(wallet().getUtxos().get(x).toString());
+                }
             }
         };
+
+        bitcoin.setPeerNodes(null);
+        bitcoin.setDiscovery(new PeerDiscovery() {
+            @Override
+            public InetSocketAddress[] getPeers(long l, long l1, TimeUnit timeUnit) throws PeerDiscoveryException {
+                return null;
+            }
+
+            @Override
+            public void shutdown() {
+
+            }
+        });
+        InetAddress node_testnet = null;
+
+        try {
+            //IP of testnet.imaginary.cash node
+            node_testnet = InetAddress.getByName("70.36.125.75");
+            bitcoin.setPeerNodes(new PeerAddress(node_testnet, 18333));
+
+        } catch (UnknownHostException e) {
+            e.printStackTrace();
+        }
+
         // Now configure and start the appkit. This will take a second or two - we could show a temporary splash screen
         // or progress widget to keep the user engaged whilst we initialise, but we don't.
         if (params == RegTestParams.get()) {
