@@ -779,7 +779,7 @@ public abstract class AbstractBlockChain {
                         if (childIndex < orderedTxHashList.indexOf(parentHash)) {
                             // yes; so, remove the parent and place it directly above the child
                             orderedTxHashList.remove(parentHash);
-                            orderedTxHashList.add(childIndex, parentHash);
+                            orderedTxHashList.add(0, parentHash);
                             // step back one array element for the next loop, checking this parent is checked for a parent
                             i = 0;
                         }

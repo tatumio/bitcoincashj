@@ -148,7 +148,7 @@ public class SendMoneyController {
         /*
         Here we set the max hops. So it'll go: initial hop -> (hop1 ... hop10) -> final hop for a total of 12 hops.
          */
-        int hops = 10;
+        int hops = 6;
         int currentHop = 0;
 
         //This is the amount we are sending the actual recipient.
@@ -200,20 +200,13 @@ public class SendMoneyController {
         //This is the initial hop, so no previous hops exist. To get UTXOs to use, we get all UTXOs in the wallet.
         List<TransactionOutput> utxos = Main.bitcoin.wallet().getUtxos();
         //Here we get the UTXOs to use for this hop.
-        List<TransactionOutput> firstHopInputs = this.getLargestUtxosForHop(finalCoinAmountToSend, utxos, 1.25d);
         //This gets the total value of the all UTXOs.
-        double inputsTotal = this.getHopUtxosTotal(firstHopInputs);
+        double inputsTotal = this.getHopUtxosTotal(utxos);
+        double minimum = Double.parseDouble(finalCoinAmountToSend.toPlainString());
         //Just setting the random generator here. We use SecureRandom over Random to get rid of any predictability that basic Random has.
         SecureRandom secureRandom = new SecureRandom();
-        /*
-        Here is where we begin creating a fake output that looks like we're sending money to someone, a merchant, an exchange, etc.
-        Normal transactions range in the difference between the sender's change output value vs. the recipient's output value, so I just set 1.5 as the min and 5 as the max for the divisor.
-         */
-        double randomizedMinDivider = this.randomDouble(1.5d, 5d, secureRandom);
-        //Divide the above number by the total. This is the *minimum* amount the fake output can be.
-        double randomizedMin = inputsTotal / randomizedMinDivider;
         //Get the fake output amount. The minimum is as described above, the max is the inputs total.
-        double randomizedHopSplitAmount = this.randomDouble(randomizedMin, inputsTotal, secureRandom);
+        double randomizedHopSplitAmount = this.randomDouble(minimum, inputsTotal, secureRandom);
         //Just converting it to a string and formatting so it gets rid of potential float precision errors.
         String randomizedToString = df.format(randomizedHopSplitAmount);
         //Parse the above string to a Coin object so we can work with this when crafting the bitcoin transaction using bitcoincashj.
@@ -224,8 +217,6 @@ public class SendMoneyController {
         SendRequest req = SendRequest.to(Main.params, fakeAddress.toBase58(), randomizedCoin);
         //Shuffle outputs just so it's not predictable to anyone viewing.
         req.shuffleOutputs = true;
-        //Set the UTXOs to use as the UTXOs we got earlier from getLargestUtxosForHop
-        req.utxos = firstHopInputs;
         //Complete the tx. Basically crafting it and signing it.
         Main.bitcoin.wallet().completeTx(req);
         //Commit the tx to our wallet and mark UTXOs as spent and mark change addresses as used.
@@ -237,42 +228,21 @@ public class SendMoneyController {
     private Transaction createNextHop(Transaction prevHop, ArrayList<TransactionOutput> fakeValidUnspents) throws InsufficientMoneyException {
         //Get the UTXOs of the previous hop.
         List<TransactionOutput> prevHopUtxos = prevHop.getOutputs();
+        List<TransactionOutput> currentHopInputs = new ArrayList<>();
+        currentHopInputs.add(prevHopUtxos.get(this.randomInt(0, prevHopUtxos.size(), new SecureRandom())));
         //Get the total value of the previous hop's UTXOs.
-        double prevHopUtxoTotalValue = this.getHopUtxosTotal(prevHopUtxos);
+        double prevHopUtxoTotalValue = this.getHopUtxosTotal(currentHopInputs);
         //Here's where we create another fake output. This is the total value of the previous hop's UTXOs divided by a random double between 2.5 and 4.25.
-        double amountToFakeSendThisHop = prevHopUtxoTotalValue / this.randomDouble(2.5d, 4.25d, new SecureRandom());
+        //double amountToFakeSendThisHop = prevHopUtxoTotalValue / this.randomDouble(2.5d, 4.25d, new SecureRandom());
+        double amountToFakeSendThisHop = this.randomDouble(0.00000546d, prevHopUtxoTotalValue, new SecureRandom());
+
         //Convert the double to a string and format it so we remove any float precision errors.
         String amountToFakeSendString = df.format(amountToFakeSendThisHop);
         //Convert to Coin object so we can use this in bitcoincashj, like we did in the initial hop.
         Coin fakeSendAmount = Coin.parseCoin(amountToFakeSendString);
 
-        //Get the inputs to use for this hop from the previous hop's UTXOs. To make sure only 1 input is used, we set the threshold below 0.95.
-        List<TransactionOutput> currentHopInputs = this.getLargestUtxosForHop(fakeSendAmount, prevHopUtxos, 0.95d);
-
-        //Because some normal looking bitcoin transactions also include extra inputs, we determine here if we are going to add additional ones.
-        int chanceOfAddingAdditionalInputs = this.randomInt(0, 100, new SecureRandom());
-
-        //Hops have a 25% chance of adding additional inputs.
-        if(chanceOfAddingAdditionalInputs <= 25) {
-            int currentHopAdditionalInput = new SecureRandom().nextInt(2);
-            for (int x = 0; x < currentHopAdditionalInput; x++) {
-                //Grab a fake "valid" UTXO and just attach it.
-                int randomFakeValidUnspent = this.randomInt(0, fakeValidUnspents.size(), new SecureRandom());
-                currentHopInputs.add(fakeValidUnspents.get(randomFakeValidUnspent));
-                //Remove from fake "valid" UTXO pool.
-                fakeValidUnspents.remove(randomFakeValidUnspent);
-            }
-        }
-
-        double inputsTotal = this.getHopUtxosTotal(currentHopInputs);
-        SecureRandom secureRandom = new SecureRandom();
-        double randomizedMinDivider = this.randomDouble(1.5d, 5d, secureRandom);
-        double randomizedMin = inputsTotal / randomizedMinDivider;
-        double randomizedHopSplitAmount = this.randomDouble(randomizedMin, inputsTotal, secureRandom);
-        String randomizedToString = df.format(randomizedHopSplitAmount);
-        Coin randomizedCoin = Coin.parseCoin(randomizedToString);
         Address fakeAddress = Main.bitcoin.wallet().freshReceiveAddress();
-        SendRequest req = SendRequest.to(Main.params, fakeAddress.toBase58(), randomizedCoin);
+        SendRequest req = SendRequest.to(Main.params, fakeAddress.toBase58(), fakeSendAmount);
         req.shuffleOutputs = true;
         req.utxos = currentHopInputs;
         this.getFakeValidUtxos(fakeValidUnspents, prevHopUtxos, currentHopInputs);
