@@ -145,32 +145,51 @@ public class SendMoneyController {
     }
 
     private void runTunnel(String amount, String finalRecipient) throws InsufficientMoneyException, InterruptedException {
+        /*
+        Here we set the max hops. So it'll go: initial hop -> (hop1 ... hop10) -> final hop for a total of 12 hops.
+         */
         int hops = 10;
         int currentHop = 0;
+
+        //This is the amount we are sending the actual recipient.
         Coin coin = Coin.parseCoin(amount);
+        //This is an array that will hold the current "valid" unspents of our hop transactions. If these hops were genuine transactions,
+        //this would be the actual UTXOs of those transactions. Because we own all the UTXOs in these hops, we have to pretend these are the "genuine" ones.
         ArrayList<TransactionOutput> fakeValidUnspents = new ArrayList<>();
-        List<Transaction> innocenceTxs = new ArrayList<>();
+        //A list of all txs for this Tunnel. It will always be: initial -> hop1 ... hop10 -> final hop
+        List<Transaction> tunnelTxs = new ArrayList<>();
+
+        //Create the initial hop.
         Transaction initialHop = this.createInitialHop(coin);
-        innocenceTxs.add(initialHop);
+        //Add hop to tunnel txs list
+        tunnelTxs.add(initialHop);
+        //Increase hop count by one.
         currentHop++;
 
+        //Here is where we start creating the hops in between the initial and final.
         for(int x = 0; x < hops; x++) {
-            Transaction nextHop = this.createNextHop(innocenceTxs.get(currentHop - 1), fakeValidUnspents);
-            innocenceTxs.add(nextHop);
+            //Create the next hop by using data from the previous hop. For x = 0, we use the initial hop as we added it the tunnelTxs array above.
+            Transaction nextHop = this.createNextHop(tunnelTxs.get(currentHop - 1), fakeValidUnspents);
+            //Add the next hop to the array
+            tunnelTxs.add(nextHop);
+            //Increase current hop by one.
             currentHop++;
         }
 
-        //FINAL TX
+        //FINAL TX/HOP
         Transaction finalTx = this.createFinalHop(fakeValidUnspents, coin, finalRecipient);
-        innocenceTxs.add(finalTx);
+        tunnelTxs.add(finalTx);
 
-        int hopsTotal = innocenceTxs.size();
+        //Here we broadcast each hop one-by-one.
+        int hopsTotal = tunnelTxs.size();
         for(int x = 0; x < hopsTotal; x++) {
+            //Send the hop to all peers.
             for(Peer peer : Main.bitcoin.peerGroup().getConnectedPeers()) {
-                peer.sendMessage(innocenceTxs.get(x));
+                peer.sendMessage(tunnelTxs.get(x));
             }
             System.out.println("COMPLETED HOP: " + (x+1) + "/" + hopsTotal);
             SecureRandom secureRandom = new SecureRandom();
+            //Wait some time before sending next hop, so we don't trip time correlation analysis as much.
             Thread.sleep(this.randomLong(2000, 15000, secureRandom));
         }
 
@@ -178,40 +197,69 @@ public class SendMoneyController {
     }
 
     private Transaction createInitialHop(Coin finalCoinAmountToSend) throws InsufficientMoneyException {
+        //This is the initial hop, so no previous hops exist. To get UTXOs to use, we get all UTXOs in the wallet.
         List<TransactionOutput> utxos = Main.bitcoin.wallet().getUtxos();
-        List<TransactionOutput> firstHopInputs = this.getLargestUtxosForHop(finalCoinAmountToSend, utxos, 1.5d);
+        //Here we get the UTXOs to use for this hop.
+        List<TransactionOutput> firstHopInputs = this.getLargestUtxosForHop(finalCoinAmountToSend, utxos, 1.25d);
+        //This gets the total value of the all UTXOs.
         double inputsTotal = this.getHopUtxosTotal(firstHopInputs);
+        //Just setting the random generator here. We use SecureRandom over Random to get rid of any predictability that basic Random has.
         SecureRandom secureRandom = new SecureRandom();
+        /*
+        Here is where we begin creating a fake output that looks like we're sending money to someone, a merchant, an exchange, etc.
+        Normal transactions range in the difference between the sender's change output value vs. the recipient's output value, so I just set 1.5 as the min and 5 as the max for the divisor.
+         */
         double randomizedMinDivider = this.randomDouble(1.5d, 5d, secureRandom);
+        //Divide the above number by the total. This is the *minimum* amount the fake output can be.
         double randomizedMin = inputsTotal / randomizedMinDivider;
+        //Get the fake output amount. The minimum is as described above, the max is the inputs total.
         double randomizedHopSplitAmount = this.randomDouble(randomizedMin, inputsTotal, secureRandom);
+        //Just converting it to a string and formatting so it gets rid of potential float precision errors.
         String randomizedToString = df.format(randomizedHopSplitAmount);
+        //Parse the above string to a Coin object so we can work with this when crafting the bitcoin transaction using bitcoincashj.
         Coin randomizedCoin = Coin.parseCoin(randomizedToString);
+        //Here's our fake address, the fake recipient. Surprise! It's just us!
         Address fakeAddress = Main.bitcoin.wallet().freshReceiveAddress();
+        //Create the SendRequest. Normal bitcoincashj stuff.
         SendRequest req = SendRequest.to(Main.params, fakeAddress.toBase58(), randomizedCoin);
+        //Shuffle outputs just so it's not predictable to anyone viewing.
         req.shuffleOutputs = true;
+        //Set the UTXOs to use as the UTXOs we got earlier from getLargestUtxosForHop
         req.utxos = firstHopInputs;
+        //Complete the tx. Basically crafting it and signing it.
         Main.bitcoin.wallet().completeTx(req);
+        //Commit the tx to our wallet and mark UTXOs as spent and mark change addresses as used.
         Main.bitcoin.wallet().commitTx(req.tx);
+        //Return the tx object from the SendRequest.
         return req.tx;
     }
 
     private Transaction createNextHop(Transaction prevHop, ArrayList<TransactionOutput> fakeValidUnspents) throws InsufficientMoneyException {
-        int currentHopAdditionalInput = new SecureRandom().nextInt(2);
+        //Get the UTXOs of the previous hop.
         List<TransactionOutput> prevHopUtxos = prevHop.getOutputs();
+        //Get the total value of the previous hop's UTXOs.
         double prevHopUtxoTotalValue = this.getHopUtxosTotal(prevHopUtxos);
-        double amountToFakeSendThisHop = prevHopUtxoTotalValue / this.randomDouble(2d, 4d, new SecureRandom());
+        //Here's where we create another fake output. This is the total value of the previous hop's UTXOs divided by a random double between 2.5 and 4.25.
+        double amountToFakeSendThisHop = prevHopUtxoTotalValue / this.randomDouble(2.5d, 4.25d, new SecureRandom());
+        //Convert the double to a string and format it so we remove any float precision errors.
         String amountToFakeSendString = df.format(amountToFakeSendThisHop);
+        //Convert to Coin object so we can use this in bitcoincashj, like we did in the initial hop.
         Coin fakeSendAmount = Coin.parseCoin(amountToFakeSendString);
 
+        //Get the inputs to use for this hop from the previous hop's UTXOs. To make sure only 1 input is used, we set the threshold below 0.95.
         List<TransactionOutput> currentHopInputs = this.getLargestUtxosForHop(fakeSendAmount, prevHopUtxos, 0.95d);
 
+        //Because some normal looking bitcoin transactions also include extra inputs, we determine here if we are going to add additional ones.
         int chanceOfAddingAdditionalInputs = this.randomInt(0, 100, new SecureRandom());
 
+        //Hops have a 25% chance of adding additional inputs.
         if(chanceOfAddingAdditionalInputs <= 25) {
+            int currentHopAdditionalInput = new SecureRandom().nextInt(2);
             for (int x = 0; x < currentHopAdditionalInput; x++) {
+                //Grab a fake "valid" UTXO and just attach it.
                 int randomFakeValidUnspent = this.randomInt(0, fakeValidUnspents.size(), new SecureRandom());
                 currentHopInputs.add(fakeValidUnspents.get(randomFakeValidUnspent));
+                //Remove from fake "valid" UTXO pool.
                 fakeValidUnspents.remove(randomFakeValidUnspent);
             }
         }
@@ -234,7 +282,10 @@ public class SendMoneyController {
     }
 
     private Transaction createFinalHop(List<TransactionOutput> allUnspentOutputs, Coin finalCoinAmountToSend, String recipient) throws InsufficientMoneyException {
+        //Final hop! Oh boy!
+        //Here we get the final amount to actually send the real recipient, and get all of the fake "valid" UTXOs and calculate which ones to use with a threshold of 1.025
         List<TransactionOutput> currentHopInputs = this.getLargestUtxosForHop(finalCoinAmountToSend, allUnspentOutputs, 1.025d);
+        //craft tx as usual
         SendRequest req = SendRequest.to(Main.params, recipient, finalCoinAmountToSend);
         req.shuffleOutputs = true;
         req.utxos = currentHopInputs;
