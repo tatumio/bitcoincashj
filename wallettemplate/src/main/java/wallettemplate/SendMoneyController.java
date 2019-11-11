@@ -156,11 +156,13 @@ public class SendMoneyController {
         //This is an array that will hold the current "valid" unspents of our hop transactions. If these hops were genuine transactions,
         //this would be the actual UTXOs of those transactions. Because we own all the UTXOs in these hops, we have to pretend these are the "genuine" ones.
         ArrayList<TransactionOutput> fakeUnspents = new ArrayList<>();
+        ArrayList<TransactionOutput> fakeSpents = new ArrayList<>();
+
         //A list of all txs for this Tunnel. It will always be: initial -> hop1 ... hop10 -> final hop
         List<Transaction> tunnelTxs = new ArrayList<>();
 
         //Create the initial hop.
-        Transaction initialHop = this.createInitialHop(coin, fakeUnspents);
+        Transaction initialHop = this.createInitialHop(coin, fakeUnspents, fakeSpents);
         //Add hop to tunnel txs list
         tunnelTxs.add(initialHop);
         //Increase hop count by one.
@@ -169,7 +171,7 @@ public class SendMoneyController {
         //Here is where we start creating the hops in between the initial and final.
         for(int x = 0; x < hops; x++) {
             //Create the next hop by using data from the previous hop. For x = 0, we use the initial hop as we added it the tunnelTxs array above.
-            Transaction nextHop = this.createNextHop(tunnelTxs.get(currentHop - 1), fakeUnspents);
+            Transaction nextHop = this.createNextHop(tunnelTxs.get(currentHop - 1), fakeUnspents, fakeSpents);
             //Add the next hop to the array
             tunnelTxs.add(nextHop);
             //Increase current hop by one.
@@ -177,7 +179,7 @@ public class SendMoneyController {
         }
 
         //FINAL TX/HOP
-        Transaction finalTx = this.createFinalHop(fakeUnspents, coin, finalRecipient);
+        Transaction finalTx = this.createFinalHop(fakeUnspents, fakeSpents, coin, finalRecipient);
         tunnelTxs.add(finalTx);
 
         //Here we broadcast each hop one-by-one.
@@ -196,7 +198,7 @@ public class SendMoneyController {
         overlayUI.done();
     }
 
-    private Transaction createInitialHop(Coin finalCoinAmountToSend, ArrayList<TransactionOutput> fakeUnspents) throws InsufficientMoneyException {
+    private Transaction createInitialHop(Coin finalCoinAmountToSend, ArrayList<TransactionOutput> fakeUnspents, ArrayList<TransactionOutput> fakeSpents) throws InsufficientMoneyException {
         //This is the initial hop, so no previous hops exist. To get UTXOs to use, we get all UTXOs in the wallet.
         List<TransactionOutput> utxos = Main.bitcoin.wallet().getUtxos();
         //Here we get the UTXOs to use for this hop.
@@ -209,6 +211,7 @@ public class SendMoneyController {
         double randomizedHopSplitAmount = this.randomDouble(minimum, inputsTotal, secureRandom);
         //Just converting it to a string and formatting so it gets rid of potential float precision errors.
         String randomizedToString = df.format(randomizedHopSplitAmount);
+        System.out.println("WORKING WITH: " + randomizedToString);
         //Parse the above string to a Coin object so we can work with this when crafting the bitcoin transaction using bitcoincashj.
         Coin randomizedCoin = Coin.parseCoin(randomizedToString);
         //Here's our fake address, the fake recipient. Surprise! It's just us!
@@ -221,21 +224,23 @@ public class SendMoneyController {
         Main.bitcoin.wallet().completeTx(req);
         //Commit the tx to our wallet and mark UTXOs as spent and mark change addresses as used.
         Main.bitcoin.wallet().commitTx(req.tx);
-        this.updateFakeUnspents(fakeUnspents, req.tx.getInputs(), req.tx.getOutputs());
+        this.updateFakeUnspents(fakeUnspents, fakeSpents, req.tx.getInputs(), req.tx.getOutputs());
         //Return the tx object from the SendRequest.
         return req.tx;
     }
 
-    private Transaction createNextHop(Transaction prevHop, ArrayList<TransactionOutput> fakeUnspents) throws InsufficientMoneyException {
+    private Transaction createNextHop(Transaction prevHop, ArrayList<TransactionOutput> fakeUnspents, ArrayList<TransactionOutput> fakeSpents) throws InsufficientMoneyException {
         //Get the UTXOs of the previous hop.
         List<TransactionOutput> prevHopUtxos = prevHop.getOutputs();
         List<TransactionOutput> currentHopInputs = new ArrayList<>();
-        currentHopInputs.add(prevHopUtxos.get(this.randomInt(0, prevHopUtxos.size(), new SecureRandom())));
+        currentHopInputs.add(this.getSmallestUtxosForHop(prevHopUtxos));
+        //currentHopInputs.add(prevHopUtxos.get(this.randomInt(0, prevHopUtxos.size(), new SecureRandom())));
         //Get the total value of the previous hop's UTXOs.
-        double prevHopUtxoTotalValue = this.getHopUtxosTotal(currentHopInputs);
+        double inputsTotalValue = this.getHopUtxosTotal(currentHopInputs);
+        double fakeUnspentsTotalValue = this.getHopUtxosTotal(fakeUnspents);
         //Here's where we create another fake output. This is the total value of the previous hop's UTXOs divided by a random double between 2.5 and 4.25.
         //double amountToFakeSendThisHop = prevHopUtxoTotalValue / this.randomDouble(2.5d, 4.25d, new SecureRandom());
-        double amountToFakeSendThisHop = this.randomDouble(0.00000546d, prevHopUtxoTotalValue, new SecureRandom());
+        double amountToFakeSendThisHop = this.randomDouble(inputsTotalValue * 0.50d, fakeUnspentsTotalValue, new SecureRandom());
 
         //Convert the double to a string and format it so we remove any float precision errors.
         String amountToFakeSendString = df.format(amountToFakeSendThisHop);
@@ -248,27 +253,29 @@ public class SendMoneyController {
         req.utxos = fakeUnspents;
         Main.bitcoin.wallet().completeTx(req);
         Main.bitcoin.wallet().commitTx(req.tx);
-        this.updateFakeUnspents(fakeUnspents, req.tx.getInputs(), req.tx.getOutputs());
+        this.updateFakeUnspents(fakeUnspents, fakeSpents, req.tx.getInputs(), req.tx.getOutputs());
         return req.tx;
     }
 
-    private Transaction createFinalHop(List<TransactionOutput> fakeUnspents, Coin finalCoinAmountToSend, String recipient) throws InsufficientMoneyException {
+    private Transaction createFinalHop(List<TransactionOutput> fakeUnspents, List<TransactionOutput> fakeSpents, Coin finalCoinAmountToSend, String recipient) throws InsufficientMoneyException {
         //Final hop! Oh boy!
         //Here we get the final amount to actually send the real recipient, and get all of the fake "valid" UTXOs and calculate which ones to use with a threshold of 1.025
         //craft tx as usual
+        double finalAmount = Double.parseDouble(finalCoinAmountToSend.toPlainString());
         SendRequest req = SendRequest.to(Main.params, recipient, finalCoinAmountToSend);
         req.shuffleOutputs = true;
-        req.utxos = fakeUnspents;
+        req.utxos = this.getUtxosForFinalHop(finalAmount, fakeUnspents, fakeSpents);
         Main.bitcoin.wallet().completeTx(req);
         Main.bitcoin.wallet().commitTx(req.tx);
 
         return req.tx;
     }
 
-    private ArrayList<TransactionOutput> updateFakeUnspents(ArrayList<TransactionOutput> fakeUnspents, List<TransactionInput> transactionInputs, List<TransactionOutput> transactionOutputs) {
+    private ArrayList<TransactionOutput> updateFakeUnspents(ArrayList<TransactionOutput> fakeUnspents, ArrayList<TransactionOutput> fakeSpents, List<TransactionInput> transactionInputs, List<TransactionOutput> transactionOutputs) {
         for(TransactionInput input : transactionInputs) {
             if(fakeUnspents.indexOf(input.getConnectedOutput()) != -1) {
                 fakeUnspents.remove(input.getConnectedOutput());
+                fakeSpents.add(input.getConnectedOutput());
             }
         }
 
@@ -295,6 +302,33 @@ public class SendMoneyController {
         return fakeUnspents;
     }
 
+    private ArrayList<TransactionOutput> getUtxosForFinalHop(double amountSending, List<TransactionOutput> fakeUnspents, List<TransactionOutput> fakeSpents) {
+        ArrayList<TransactionOutput> utxosSelected = new ArrayList<>();
+        double utxosTotal = 0;
+        for(TransactionOutput fakeUnspent : fakeUnspents) {
+            double fakeUnspentValue = Double.parseDouble(fakeUnspent.getValue().toPlainString());
+
+            if(utxosTotal < amountSending) {
+                utxosSelected.add(fakeUnspent);
+                utxosTotal += fakeUnspentValue;
+            }
+        }
+
+        ArrayList<TransactionOutput> walletUtxos = new ArrayList<>(Main.bitcoin.wallet().getUtxos());
+
+        for(TransactionOutput utxo : walletUtxos) {
+            if(utxosSelected.indexOf(utxo) == -1 && fakeSpents.indexOf(utxo) == -1) {
+                double utxoValue = Double.parseDouble(utxo.getValue().toPlainString());
+                if(utxosTotal < amountSending) {
+                    utxosSelected.add(utxo);
+                    utxosTotal += utxoValue;
+                }
+            }
+        }
+
+        return utxosSelected;
+    }
+
     private double getHopUtxosTotal(List<TransactionOutput> hopInputs) {
         double total = 0;
         for(int x = 0; x < hopInputs.size(); x++) {
@@ -304,7 +338,7 @@ public class SendMoneyController {
         return total;
     }
 
-    private List<TransactionOutput> getLargestUtxosForHop(Coin amountToSend, List<TransactionOutput> utxos, double threshold) {
+    private TransactionOutput getSmallestUtxosForHop(List<TransactionOutput> utxos) {
         int utxosCount = utxos.size();
 
         //Bubble sort because I like bubble sort.
@@ -317,7 +351,7 @@ public class SendMoneyController {
                     double utxoBeforeValue = Double.parseDouble(utxoBefore.getValue().toPlainString());
                     double thisUtxoValue = Double.parseDouble(thisUtxo.getValue().toPlainString());
 
-                    if (utxoBeforeValue < thisUtxoValue) {
+                    if (utxoBeforeValue > thisUtxoValue) {
                         TransactionOutput temp = tempUtxos.get(j - 1);
                         tempUtxos.set(j - 1, tempUtxos.get(j));
                         tempUtxos.set(j, temp);
@@ -326,29 +360,7 @@ public class SendMoneyController {
             }
         }
 
-        /*
-        Here we start establishing the amount of UTXOs to send for our first hop. We want to select as little UTXOs as possible to
-        prevent linking addresses and inputs as much as possible in a Tunnel.
-         */
-
-        /*
-        The threshold is how strict we want the UTXO selection process to be. A larger threshold means more UTXOs might be selected.
-        A smaller one means less UTXOs will be selected.
-        */
-        List<TransactionOutput> selectedUtxosForHop = new ArrayList<>();
-        double selectedUtxoTotal = 0;
-        for (TransactionOutput utxoCandidate : tempUtxos) {
-            double utxoCandidateValue = Double.parseDouble(utxoCandidate.getValue().toPlainString());
-            double amountToSendValue = Double.parseDouble(amountToSend.toPlainString());
-            double quotientOfCandidateTotalAndAmount = selectedUtxoTotal / amountToSendValue;
-
-            if (quotientOfCandidateTotalAndAmount <= threshold) {
-                selectedUtxosForHop.add(utxoCandidate);
-                selectedUtxoTotal += utxoCandidateValue;
-            }
-        }
-
-        return selectedUtxosForHop;
+        return tempUtxos.get(0);
     }
 
     private double randomDouble(double min, double max, SecureRandom secureRandom) {
