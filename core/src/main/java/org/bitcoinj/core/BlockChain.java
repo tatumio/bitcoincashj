@@ -89,7 +89,7 @@ public class BlockChain extends AbstractBlockChain {
         blockStore.put(newBlock);
         return newBlock;
     }
-    
+
     @Override
     protected StoredBlock addToBlockStore(StoredBlock storedPrev, Block blockHeader)
             throws BlockStoreException, VerificationException {
@@ -99,10 +99,15 @@ public class BlockChain extends AbstractBlockChain {
     }
 
     @Override
-    public void rollbackBlockStore(int height) throws BlockStoreException {
+    public void rollbackBlockStore(int desiredHeight) throws BlockStoreException {
         lock.lock();
         try {
+            int height = desiredHeight;
             int currentHeight = getBestChainHeight();
+            if(desiredHeight >= currentHeight) {
+                height = (height - (desiredHeight - currentHeight));
+            }
+
             checkArgument(height >= 0 && height <= currentHeight, "Bad height: %s", height);
             if (height == currentHeight)
                 return; // nothing to do
