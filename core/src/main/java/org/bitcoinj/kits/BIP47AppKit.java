@@ -536,15 +536,6 @@ public class BIP47AppKit extends AbstractIdleService {
         try {
             int blockHeight = tx.getConfidence().getAppearedAtChainHeight() - 2;
             this.vChain.rollbackBlockStore(blockHeight);
-
-        /*
-        We make sure to remove the notification transaction upon rolling back our local chain.
-        This is so when we scan the block again, we properly get the notification transaction and any payment transactions within the same block.
-         */
-            vWallet.getTransactionPool(WalletTransaction.Pool.UNSPENT).remove(tx.getHash());
-            vWallet.getTransactionPool(WalletTransaction.Pool.SPENT).remove(tx.getHash());
-            vWallet.getTransactionPool(WalletTransaction.Pool.DEAD).remove(tx.getHash());
-            vWallet.getTransactionPool(WalletTransaction.Pool.PENDING).remove(tx.getHash());
         } catch (IllegalStateException e) {
             //fail silently, we dont need to rollback as it works when txs are in mempool
         }
