@@ -51,4 +51,6 @@ Not a programmer? Not a problem. You can donate Bitcoin Cash to the addresses be
 
 bitcoincash:qptnypuugy29lttleggl7l0vpls0vg295q9nsavw6g
 
-PM8TJTTrEkPNdugn4exq72mYugqojF5XKXgTinyK3mhmYKegXUARNDr3imkN8i1wi6fHQ9szAUYrFKzXwP1NP8iUXuRQWwPcirphcnD6sDxYihXG6rYW
+PM8TJaArHqgRL78aUwxCADZneMYjxQT9pv3NhhjRo2HjNYcFysc1rpf3U9rJV78kayJeDU6FcxZBiAxFxfGxapa9fAFCLLXCNj7Qzjw8bpgDof5a4JbC
+
+pokkst#66280
