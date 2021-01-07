@@ -9,16 +9,6 @@ buildscript {
     }
 }
 
-plugins {
-    // Apply the java-library plugin to add support for Java Library
-    id 'java-library'
-
-    id "com.jfrog.artifactory" version "4.16.1"
-}
-
-apply plugin: "com.jfrog.artifactory"
-apply plugin: 'maven-publish'
-
 allprojects {
     repositories {
         jcenter()
@@ -27,22 +17,4 @@ allprojects {
 
 
     group = 'bitcoincashj'
-}
-
-publishing {
-    publications {
-        maven(MavenPublication) {
-            from components.java
-        }
-    }
-
-    repositories {
-        maven {
-            url repsyUrl
-            credentials {
-                username repsyUsername
-                password repsyPassword
-            }
-        }
-    }
 }
