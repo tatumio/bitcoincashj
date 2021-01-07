@@ -48,16 +48,16 @@ protobuf {
 }
 
 test {
-    exclude 'org/bitcoinj/core/PeerTest*'
-    exclude 'org/bitcoinj/core/TransactionBroadcastTest*'
-    exclude 'org/bitcoinj/net/discovery/DnsDiscoveryTest*'
+    exclude 'org/bitcoincashj/core/PeerTest*'
+    exclude 'org/bitcoincashj/core/TransactionBroadcastTest*'
+    exclude 'org/bitcoincashj/net/discovery/DnsDiscoveryTest*'
     testLogging {
         events "failed"
         exceptionFormat "full"
     }
 }
 
-ext.moduleName = 'org.bitcoinj.core'
+ext.moduleName = 'org.bitcoincashj.core'
 
 jar {
     inputs.property("moduleName", moduleName)
